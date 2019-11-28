@@ -1,0 +1,662 @@
+variables:
+  PG_VERSION: "11.6"
+  PG_DRIVER_VERSION: "postgresql-42.2.6"
+  DIND_VERSION: "19.03.5-dind"
+  LIQUIBASE_VERSION: "liquibase-3.8.0"
+  BASE_IMAGE_VERSION: "java8-node12-nginx16-mvn362"
+  BASE_IMAGE: "${DOCKER_REGISTRY}/tools/apps:${BASE_IMAGE_VERSION}"
+  BASE_IMAGE_PRJ_PATH: "base-image"
+  LIQUIBASE_IMAGE: "${DOCKER_REGISTRY}/tools/liquibase:${LIQUIBASE_VERSION}-${PG_DRIVER_VERSION}"
+  LIQUIBASE_IMAGE_PRJ_PATH: "liquibase-image"
+  LIQUIBASE_IMAGE_PATH: "${DOCKER_REGISTRY}/liquibase"
+  FRONTEND_PRJ_PATH: "ui"
+  APPS_IMAGE_NAME: "eportal"
+  MIGRATION_PATH: "db-migrations"
+  API_PRJ: "api"
+  MOCK_PRJ: "mock-api"
+  AUTHENTICATION_PATH: "authentication"
+  CALENDAR_PATH: "calendar"
+  PROFILE_PATH: "profile"
+  ADMIN_PATH: "admin"
+  BUDGET_PATH: "budget"
+  DECLARATION_PATH: "declaration"
+  EDI_PATH: "edi"
+  FEEDBACK_PATH: "feedback"
+  NOTIFICATION_PATH: "notification"
+  PUSH_PATH: "push"
+  MOCK_LUXOFT_PRJ_PATH: "mock-api-luxoft"
+  APPS_IMAGE_PATH: "${DOCKER_REGISTRY}/eportal"
+  DOCKER_TLS_CERTDIR: ""
+  CONTENT: 'Content-Type: application/json'
+  TOKEN: "PRIVATE-TOKEN: ${GITLAB_TOKEN}"
+  NEW_TAG: "${RELEASE_NAME}-${RELEASE_VERSION}"
+  MAVEN_OPTS: "-Dmaven.repo.local=.m2/repository"
+  POSTGRES_DB: "${POSTGRES_DB}"
+  POSTGRES_USER: "${POSTGRES_USER}"
+  POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+
+stages:
+  - prebuild
+  - mock_install
+  - mock_build
+  - install
+#  - unit_test
+  - sonarqube
+  - build
+  - publish
+  - deploy
+  - create_release
+
+before_script:
+  - export RUNNER_IP=$(cat /etc/hosts | awk '{if ($2 == "'"$HOSTNAME"'") print $1;}')
+  - echo ${RUNNER_IP}
+  - export CI_COMMIT_REF_NAME=$(echo ${CI_COMMIT_REF_NAME} | sed 's/\//-/'g | sed 's/_/-/'g |  tr '[:upper:]' '[:lower:]')
+
+docker_liquibase_image_publish:
+  stage: prebuild
+  services:
+    - name: maven.e-taxes.gov.az:48082/docker:${DIND_VERSION}
+      command: ["--insecure-registry=maven.e-taxes.gov.az:48083","--insecure-registry=maven.e-taxes.gov.az:48082"]
+  script:
+    - docker login -u $REPOSITORY_USER -p $REPOSITORY_PASS $DOCKER_REGISTRY
+    - docker build --rm -t $DOCKER_REGISTRY/tools/liquibase -t $DOCKER_REGISTRY/tools/liquibase:${LIQUIBASE_VERSION}-${PG_DRIVER_VERSION} --build-arg IMAGE_VERSION="${LIQUIBASE_VERSION}-${PG_DRIVER_VERSION}" -f ${LIQUIBASE_IMAGE_PRJ_PATH}/Dockerfile ${LIQUIBASE_IMAGE_PRJ_PATH}/
+    - docker push $DOCKER_REGISTRY/tools/liquibase
+  when: manual
+  except:
+    - tags
+  tags:
+    - docker
+
+docker_base_image_publish:
+  stage: prebuild
+  services:
+    - name: maven.e-taxes.gov.az:48082/docker:${DIND_VERSION}
+      command: ["--insecure-registry=maven.e-taxes.gov.az:48083","--insecure-registry=maven.e-taxes.gov.az:48082"]
+  script:
+    - docker login -u $REPOSITORY_USER -p $REPOSITORY_PASS $DOCKER_REGISTRY
+    - docker build --rm -t $DOCKER_REGISTRY/tools/apps -t $DOCKER_REGISTRY/tools/apps:${BASE_IMAGE_VERSION} --build-arg IMAGE_VERSION="${BASE_IMAGE_VERSION}" -f ${BASE_IMAGE_PRJ_PATH}/Dockerfile ${BASE_IMAGE_PRJ_PATH}/
+    - docker push $DOCKER_REGISTRY/tools/apps
+  when: manual
+  except:
+    - tags
+  tags:
+    - docker
+
+.npm_install_dependency: &npm_install_dependency
+  image: ${BASE_IMAGE}
+  stage: install
+  script:
+    - cd ${PATH_VAR}
+    - npm install
+  except:
+    - tags
+  tags:
+    - docker
+
+.maven_install_dependency: &maven_install_dependency
+  image: ${BASE_IMAGE}
+  stage: install
+  script:
+    - cd ${PATH_VAR}
+    - mvn dependency:go-offline
+  cache:
+    key: ${CACHE_VAR}-modules-cache
+    paths:
+      - ${PATH_VAR}/.m2/repository
+  except:
+    - tags
+  tags:
+    - docker
+        
+.maven_install_mock_dependency: &maven_install_mock_dependency
+  image: ${BASE_IMAGE}
+  stage: mock_install
+  script:
+    - cd ${PATH_VAR}
+    - mvn dependency:go-offline
+  cache:
+    key: ${CACHE_VAR}-modules-cache
+    paths:
+      - ${PATH_VAR}/.m2/repository
+  except:
+    - tags
+  tags:
+    - docker
+
+.unit_test:frontend:
+  image: ${BASE_IMAGE}
+  stage: unit_test
+  script:
+    - cd ${FRONTEND_PRJ_PATH}
+    - npm run test -- --ci --coverage
+  cache:
+    key: frontend-modules-cache
+    paths:
+      - ${FRONTEND_PRJ_PATH}/node_modules/
+    policy: pull
+  only:
+    - branches
+  except:
+    - develop
+  tags:
+    - docker
+
+sonarqube:frontend:
+  image: ${BASE_IMAGE}
+  stage: sonarqube
+  script:
+    - cd ${FRONTEND_PRJ_PATH}
+    - npm run sonar-scanner -- -Dsonar.host.url=${SONAR_URL} -Dsonar.login=${SONAR_LOGIN} -Dsonar.projectKey=${FRONTEND_PRJ_PATH}-${CI_COMMIT_REF_NAME} -Dsonar.projectVersion=${CI_COMMIT_SHA}
+  cache:
+    key: frontend-modules-cache
+    paths:
+      - ${FRONTEND_PRJ_PATH}/node_modules/
+    policy: pull
+  dependencies: []
+  except:
+    - tags
+  tags:
+    - docker
+
+.npm_build: &npm_build
+  image: ${BASE_IMAGE}
+  stage: build
+  except:
+    - tags
+  tags:
+    - docker
+
+.maven_build: &maven_build
+  image: ${BASE_IMAGE}
+  stage: build
+  script:
+    - cd ${PATH_VAR}
+    - mvn package sonar:sonar -Dsonar.host.url=${SONAR_URL} -Dsonar.login=${SONAR_LOGIN} -Dsonar.projectKey=${PATH_VAR}-${CI_COMMIT_REF_NAME} -Dsonar.projectName=${PATH_VAR}-${CI_COMMIT_REF_NAME} -Dsonar.projectVersion=${CI_COMMIT_SHA}
+  cache:
+    key: ${CACHE_VAR}-modules-cache
+    paths:
+      - ${PATH_VAR}/.m2/repository
+    policy: pull
+  artifacts:
+    expire_in: 30 mins
+    paths:
+      - ${PATH_VAR}/target/${JAR_VAR}.jar
+    when: on_success
+  except:
+    - tags
+  tags:
+    - docker
+        
+.maven_mock_build: &maven_mock_build
+  image: ${BASE_IMAGE}
+  stage: mock_build
+  script:
+    - cd ${PATH_VAR}
+    - mvn package
+  cache:
+    key: ${CACHE_VAR}-modules-cache
+    paths:
+      - ${PATH_VAR}/.m2/repository
+    policy: pull
+  artifacts:
+    expire_in: 30 mins
+    paths:
+      - ${PATH_VAR}/target/${JAR_VAR}.jar
+    when: on_success
+  except:
+    - tags
+  tags:
+    - docker
+
+.docker: &docker
+  stage: publish
+  services:
+    - name: maven.e-taxes.gov.az:48082/docker:${DIND_VERSION}
+      command: ["--insecure-registry=maven.e-taxes.gov.az:48083","--insecure-registry=maven.e-taxes.gov.az:48082"]
+    - name: maven.e-taxes.gov.az:48082/postgres:${PG_VERSION}
+      alias: postgres
+  script:
+    - docker images
+    - docker login -u ${REPOSITORY_USER} -p ${REPOSITORY_PASS} ${DOCKER_REGISTRY}
+    - docker build --rm -t ${APPS_IMAGE_PATH}:${CI_COMMIT_SHA} --build-arg BASE_IMAGE=${BASE_IMAGE} .
+    - docker tag ${APPS_IMAGE_PATH}:${CI_COMMIT_SHA} ${APPS_IMAGE_PATH}:${CI_COMMIT_REF_NAME}
+    - docker tag ${APPS_IMAGE_PATH}:${CI_COMMIT_SHA} ${APPS_IMAGE_PATH}:${CI_COMMIT_REF_NAME}.${CI_COMMIT_SHA}
+    - cd ${MIGRATION_PATH}
+    - docker login -u ${REPOSITORY_USER} -p ${REPOSITORY_PASS} ${DOCKER_REGISTRY}
+    - docker build -t ${LIQUIBASE_IMAGE_PATH}:${CI_COMMIT_SHA} --build-arg LIQUIBASE_IMAGE=${LIQUIBASE_IMAGE} .
+    - docker tag ${LIQUIBASE_IMAGE_PATH}:${CI_COMMIT_SHA} ${LIQUIBASE_IMAGE_PATH}:${CI_COMMIT_REF_NAME}
+    - docker tag ${LIQUIBASE_IMAGE_PATH}:${CI_COMMIT_SHA} ${LIQUIBASE_IMAGE_PATH}:${CI_COMMIT_REF_NAME}.${CI_COMMIT_SHA}
+    - docker run -w /opt/update --add-host=postgres:${RUNNER_IP} -e POSTGRES_DB=${POSTGRES_DB} -e POSTGRES_USER=${POSTGRES_USER} -e POSTGRES_PASSWORD=${POSTGRES_PASSWORD} ${LIQUIBASE_IMAGE_PATH}:${CI_COMMIT_SHA} /opt/scripts/liquibase.sh update
+    - docker push ${LIQUIBASE_IMAGE_PATH}
+    - docker push ${APPS_IMAGE_PATH}
+  dependencies:
+    - npm_build:frontend
+    - maven_build:authentication
+    - maven_build:calendar
+    - maven_build:profile
+    - maven_build:admin
+    - maven_build:budget
+    - maven_build:edi
+    - maven_build:declaration
+    - maven_build:feedback
+    - maven_build:notification
+    - maven_build:push
+    - maven_mock_build:authentication
+    - maven_mock_build:calendar
+    - maven_mock_build:profile
+    - maven_mock_build:admin
+    - maven_mock_build:budget
+    - maven_mock_build:edi
+    - maven_mock_build:declaration
+    - maven_mock_build:feedback
+    - maven_mock_build:notification
+    - maven_mock_build:push
+    - npm_install_dependency:mock_api_luxoft
+  tags:
+    - docker
+
+gitlab_release:
+  image: ${BASE_IMAGE}
+  stage: create_release
+  dependencies: []
+  script:
+    - export BASE_URL="https://google.com"
+    - curl -k -X POST --silent --show-error --fail "https://gitlab.e-taxes.gov.az/api/v4/projects/${CI_PROJECT_ID}/repository/tags?tag_name=${NEW_TAG}&ref=${CI_COMMIT_SHA}&private_token=${GITLAB_TOKEN}"
+    - git config http.sslVerify false
+    - git fetch
+    - export SECOND_TAG_REV=$(git rev-list --tags --skip=1 --max-count=1)
+    - export SECOND_TAG=$(git describe --abbrev=0 --tags ${SECOND_TAG_REV})
+    - export GIT_LOG=$(git log --pretty='\r\n- %h %d %s' ${SECOND_TAG}..${NEW_TAG})
+    - export GIT_CHANGELOG=$(echo "## CHANGELOG\r\n" "$GIT_LOG" | tr -d "\n")
+    - curl -k -X POST -v --show-error --fail -H "${CONTENT}" -H "${TOKEN}" -d '{"name":"'"${NEW_TAG}"'","tag_name":"'"${NEW_TAG}"'","description":"'"${GIT_CHANGELOG}"'","assets":{"links":[{"name":"front_page","url":"'"${BASE_URL}"'"}]}}' "https://gitlab.e-taxes.gov.az/api/v4/projects/${CI_PROJECT_ID}/releases"
+  when: manual
+  except:
+    - tags
+  tags:
+    - docker
+
+maven_install_dependency:authentication:
+  <<: *maven_install_dependency
+  variables:
+    PATH_VAR: "${API_PRJ}/${AUTHENTICATION_PATH}"
+    CACHE_VAR: "authentication"
+
+maven_install_dependency:profile:
+  <<: *maven_install_dependency
+  variables:
+    PATH_VAR: "${API_PRJ}/${PROFILE_PATH}"
+    CACHE_VAR: "profile"
+
+maven_install_dependency:calendar:
+  <<: *maven_install_dependency
+  variables:
+    PATH_VAR: "${API_PRJ}/${CALENDAR_PATH}"
+    CACHE_VAR: "calendar"
+
+maven_install_dependency:admin:
+  <<: *maven_install_dependency
+  variables:
+    PATH_VAR: "${API_PRJ}/${ADMIN_PATH}"
+    CACHE_VAR: "admin"
+
+maven_install_dependency:budget:
+  <<: *maven_install_dependency
+  variables:
+    PATH_VAR: "${API_PRJ}/${BUDGET_PATH}"
+    CACHE_VAR: "budget"
+
+maven_install_dependency:edi:
+  <<: *maven_install_dependency
+  variables:
+    PATH_VAR: "${API_PRJ}/${EDI_PATH}"
+    CACHE_VAR: "edi"
+
+maven_install_dependency:declaration:
+  <<: *maven_install_dependency
+  variables:
+    PATH_VAR: "${API_PRJ}/${DECLARATION_PATH}"
+    CACHE_VAR: "declaration"
+
+maven_install_dependency:feedback:
+  <<: *maven_install_dependency
+  variables:
+    PATH_VAR: "${API_PRJ}/${FEEDBACK_PATH}"
+    CACHE_VAR: "feedback"
+
+maven_install_dependency:notification:
+  <<: *maven_install_dependency
+  variables:
+    PATH_VAR: "${API_PRJ}/${NOTIFICATION_PATH}"
+    CACHE_VAR: "notification"
+
+maven_install_dependency:push:
+  <<: *maven_install_dependency
+  variables:
+    PATH_VAR: "${API_PRJ}/${PUSH_PATH}"
+    CACHE_VAR: "push"
+
+maven_build:authentication:
+  <<: *maven_build
+  variables:
+    PATH_VAR: "${API_PRJ}/${AUTHENTICATION_PATH}"
+    CACHE_VAR: "authentication"
+    JAR_VAR: "authentication"
+
+maven_build:authentication:
+  <<: *maven_build
+  variables:
+    PATH_VAR: "${API_PRJ}/${AUTHENTICATION_PATH}"
+    CACHE_VAR: "authentication"
+    JAR_VAR: "authentication"
+
+maven_build:profile:
+  <<: *maven_build
+  variables:
+    PATH_VAR: "${API_PRJ}/${PROFILE_PATH}"
+    CACHE_VAR: "profile"
+    JAR_VAR: "profile"
+
+maven_build:calendar:
+  <<: *maven_build
+  variables:
+    PATH_VAR: "${API_PRJ}/${CALENDAR_PATH}"
+    CACHE_VAR: "calendar"
+    JAR_VAR: "calendar"
+
+maven_build:admin:
+  <<: *maven_build
+  variables:
+    PATH_VAR: "${API_PRJ}/${ADMIN_PATH}"
+    CACHE_VAR: "admin"
+    JAR_VAR: "admin"
+
+maven_build:budget:
+  <<: *maven_build
+  variables:
+    PATH_VAR: "${API_PRJ}/${BUDGET_PATH}"
+    CACHE_VAR: "budget"
+    JAR_VAR: "budget"
+
+maven_build:edi:
+  <<: *maven_build
+  variables:
+    PATH_VAR: "${API_PRJ}/${EDI_PATH}"
+    CACHE_VAR: "edi"
+    JAR_VAR: "EDI"
+
+maven_build:declaration:
+  <<: *maven_build
+  variables:
+    PATH_VAR: "${API_PRJ}/${DECLARATION_PATH}"
+    CACHE_VAR: "declaration"
+    JAR_VAR: "declaration"
+
+maven_build:feedback:
+  <<: *maven_build
+  variables:
+    PATH_VAR: "${API_PRJ}/${FEEDBACK_PATH}"
+    CACHE_VAR: "feedback"
+    JAR_VAR: "feedback"
+
+maven_build:notification:
+  <<: *maven_build
+  variables:
+    PATH_VAR: "${API_PRJ}/${NOTIFICATION_PATH}"
+    CACHE_VAR: "notification"
+    JAR_VAR: "notification"
+
+maven_build:push:
+  <<: *maven_build
+  variables:
+    PATH_VAR: "${API_PRJ}/${PUSH_PATH}"
+    CACHE_VAR: "push"
+    JAR_VAR: "push"
+
+npm_install_dependency:frontend:
+  <<: *npm_install_dependency
+  variables:
+    PATH_VAR: "${FRONTEND_PRJ_PATH}"
+  cache:
+    key: frontend-modules-cache
+    paths:
+      - ${FRONTEND_PRJ_PATH}/node_modules/
+
+npm_install_dependency:mock_api_luxoft:
+  <<: *npm_install_dependency
+  variables:
+    PATH_VAR: "${MOCK_LUXOFT_PRJ_PATH}"
+  artifacts:
+    expire_in: 30 mins
+    paths:
+      - ${MOCK_LUXOFT_PRJ_PATH}
+    when: on_success
+
+npm_build:frontend:
+  <<: *npm_build
+  script:
+    - cd ${FRONTEND_PRJ_PATH}
+    - unset CI
+    - npm run build
+  cache:
+    key: frontend-modules-cache
+    paths:
+      - ${FRONTEND_PRJ_PATH}/node_modules/
+    policy: pull
+  artifacts:
+    expire_in: 30 mins
+    paths:
+      - ${FRONTEND_PRJ_PATH}/build/
+      - ${BASE_IMAGE_PRJ_PATH}/nginx/
+      - ${MIGRATION_PATH}
+      - Dockerfile
+    when: on_success
+
+maven_install_mock_dependency:authentication:
+  <<: *maven_install_mock_dependency
+  variables:
+    PATH_VAR: "${MOCK_PRJ}/${AUTHENTICATION_PATH}"
+    CACHE_VAR: "${MOCK_PRJ}-authentication"
+
+maven_install_mock_dependency:profile:
+  <<: *maven_install_mock_dependency
+  variables:
+    PATH_VAR: "${MOCK_PRJ}/${PROFILE_PATH}"
+    CACHE_VAR: "${MOCK_PRJ}-profile"
+
+maven_install_mock_dependency:calendar:
+  <<: *maven_install_mock_dependency
+  variables:
+    PATH_VAR: "${MOCK_PRJ}/${CALENDAR_PATH}"
+    CACHE_VAR: "${MOCK_PRJ}-calendar"
+
+maven_install_mock_dependency:admin:
+  <<: *maven_install_mock_dependency
+  variables:
+    PATH_VAR: "${MOCK_PRJ}/${ADMIN_PATH}"
+    CACHE_VAR: "${MOCK_PRJ}-admin"
+
+maven_install_mock_dependency:budget:
+  <<: *maven_install_mock_dependency
+  variables:
+    PATH_VAR: "${MOCK_PRJ}/${BUDGET_PATH}"
+    CACHE_VAR: "${MOCK_PRJ}-budget"
+
+maven_install_mock_dependency:edi:
+  <<: *maven_install_mock_dependency
+  variables:
+    PATH_VAR: "${MOCK_PRJ}/${EDI_PATH}"
+    CACHE_VAR: "${MOCK_PRJ}-edi"
+
+maven_install_mock_dependency:declaration:
+  <<: *maven_install_mock_dependency
+  variables:
+    PATH_VAR: "${MOCK_PRJ}/${DECLARATION_PATH}"
+    CACHE_VAR: "${MOCK_PRJ}-declaration"
+
+maven_install_mock_dependency:feedback:
+  <<: *maven_install_mock_dependency
+  variables:
+    PATH_VAR: "${MOCK_PRJ}/${FEEDBACK_PATH}"
+    CACHE_VAR: "${MOCK_PRJ}-feedback"
+
+maven_install_mock_dependency:notification:
+  <<: *maven_install_mock_dependency
+  variables:
+    PATH_VAR: "${MOCK_PRJ}/${NOTIFICATION_PATH}"
+    CACHE_VAR: "${MOCK_PRJ}-notification"
+
+maven_install_mock_dependency:push:
+  <<: *maven_install_mock_dependency
+  variables:
+    PATH_VAR: "${MOCK_PRJ}/${PUSH_PATH}"
+    CACHE_VAR: "${MOCK_PRJ}-push"
+
+maven_mock_build:authentication:
+  <<: *maven_mock_build
+  variables:
+    PATH_VAR: "${MOCK_PRJ}/${AUTHENTICATION_PATH}"
+    CACHE_VAR: "${MOCK_PRJ}-authentication"
+    JAR_VAR: "authentication"
+
+maven_mock_build:authentication:
+  <<: *maven_mock_build
+  variables:
+    PATH_VAR: "${MOCK_PRJ}/${AUTHENTICATION_PATH}"
+    CACHE_VAR: "${MOCK_PRJ}-authentication"
+    JAR_VAR: "authentication"
+
+maven_mock_build:profile:
+  <<: *maven_mock_build
+  variables:
+    PATH_VAR: "${MOCK_PRJ}/${PROFILE_PATH}"
+    CACHE_VAR: "${MOCK_PRJ}-profile"
+    JAR_VAR: "profile"
+
+maven_mock_build:calendar:
+  <<: *maven_mock_build
+  variables:
+    PATH_VAR: "${MOCK_PRJ}/${CALENDAR_PATH}"
+    CACHE_VAR: "${MOCK_PRJ}-calendar"
+    JAR_VAR: "calendar"
+
+maven_mock_build:admin:
+  <<: *maven_mock_build
+  variables:
+    PATH_VAR: "${MOCK_PRJ}/${ADMIN_PATH}"
+    CACHE_VAR: "${MOCK_PRJ}-admin"
+    JAR_VAR: "admin"
+
+maven_mock_build:budget:
+  <<: *maven_mock_build
+  variables:
+    PATH_VAR: "${MOCK_PRJ}/${BUDGET_PATH}"
+    CACHE_VAR: "${MOCK_PRJ}-budget"
+    JAR_VAR: "budget"
+
+maven_mock_build:edi:
+  <<: *maven_mock_build
+  variables:
+    PATH_VAR: "${MOCK_PRJ}/${EDI_PATH}"
+    CACHE_VAR: "${MOCK_PRJ}-edi"
+    JAR_VAR: "EDI"
+
+maven_mock_build:declaration:
+  <<: *maven_mock_build
+  variables:
+    PATH_VAR: "${MOCK_PRJ}/${DECLARATION_PATH}"
+    CACHE_VAR: "${MOCK_PRJ}-declaration"
+    JAR_VAR: "declaration"
+
+maven_mock_build:feedback:
+  <<: *maven_mock_build
+  variables:
+    PATH_VAR: "${MOCK_PRJ}/${FEEDBACK_PATH}"
+    CACHE_VAR: "${MOCK_PRJ}-feedback"
+    JAR_VAR: "feedback"
+
+maven_mock_build:notification:
+  <<: *maven_mock_build
+  variables:
+    PATH_VAR: "${MOCK_PRJ}/${NOTIFICATION_PATH}"
+    CACHE_VAR: "${MOCK_PRJ}-notification"
+    JAR_VAR: "notification"
+
+maven_mock_build:push:
+  <<: *maven_mock_build
+  variables:
+    PATH_VAR: "${MOCK_PRJ}/${PUSH_PATH}"
+    CACHE_VAR: "${MOCK_PRJ}-push"
+    JAR_VAR: "push"
+        
+docker_publish_develop:
+  <<: *docker
+  variables:
+    DEPLOYMENT_ENVIRONMENT: develop
+    GIT_STRATEGY: none
+  environment:
+    name: develop
+  only:
+    - /^develop.*$/
+
+docker_publish_feature:
+  <<: *docker
+  variables:
+    DEPLOYMENT_ENVIRONMENT: feature
+    GIT_STRATEGY: none
+  only:
+    - /^feature.*$/
+  except:
+    - merge_requests
+  environment:
+    name: feature
+  when: manual
+
+docker_publish_bugfix:
+  <<: *docker
+  variables:
+    DEPLOYMENT_ENVIRONMENT: bugfix
+    GIT_STRATEGY: none
+  only:
+    - /^bugfix.*$/
+  except:
+    - merge_requests
+  environment:
+    name: bugfix
+  when: manual
+
+docker_publish_hotfix:
+  <<: *docker
+  variables:
+    DEPLOYMENT_ENVIRONMENT: hotix
+    GIT_STRATEGY: none
+  only:
+    - /^hotfix.*$/
+  except:
+    - merge_requests
+  environment:
+    name: hotfix
+  when: manual
+
+docker_publish_release:
+  <<: *docker
+  variables:
+    DEPLOYMENT_ENVIRONMENT: release
+    GIT_STRATEGY: none
+  only:
+    - /^release.*$/
+  except:
+    - merge_requests
+  environment:
+    name: release
+  when: manual
+
+docker_publish_luxoft:
+  <<: *docker
+  variables:
+    DEPLOYMENT_ENVIRONMENT: luxoft
+    GIT_STRATEGY: none
+  only:
+    - /^luxoft.*$/
+  environment:
+    name: luxoft
+  when: manual

@@ -1,0 +1,20 @@
+# Содержит описание сторонних сервисов, которые используются проектом
+#
+# Если запускать при помощи docker-compose up, то по умолчанию еще будут
+# запущены наши сервисы, описанные в docker-compose.override.yaml.
+#
+# Чтобы запустить только сторонние сервисы 
+# docker-compose -f docker-compose.yaml up
+#
+version: '3.4'
+
+services:
+
+  postgres:
+    image: maven.e-taxes.gov.az:48082/postgres:11.5
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=db_user
+      - POSTGRES_PASSWORD=db_password
+      - POSTGRES_DB=portal

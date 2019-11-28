@@ -1,0 +1,101 @@
+# Cодержит eportal сервисы
+#
+# При изменении кода eportal сервисов необходимо пересоздать образы командами:
+# docker-compose down
+# docker-compose build
+#
+version: '3.4'
+x-backend-base:
+  &backend-base
+  build:
+    context: .
+    dockerfile: ./docker/backend/Dockerfile
+  image: backend
+  depends_on:
+    - postgres
+    - migration
+  restart: on-failure
+
+services:
+
+  admin:
+    <<: *backend-base
+    entrypoint: [java, "-Djava.security.egd=file:/dev/./urandom", "-Dspring.datasource.url=jdbc:postgresql://postgres/portal", -Xmx256m, -jar, /opt/admin/admin.jar]
+
+  authentication:
+    <<: *backend-base
+    entrypoint: [java, "-Djava.security.egd=file:/dev/./urandom", "-Dspring.datasource.url=jdbc:postgresql://postgres/portal", -Xmx256m, -jar, /opt/authentication/authentication.jar]
+
+  budget:
+    <<: *backend-base
+    entrypoint: [java, "-Djava.security.egd=file:/dev/./urandom", -Xmx256m, -jar, /opt/budget/budget.jar]
+
+  calendar:
+    <<: *backend-base
+    entrypoint: [java, "-Djava.security.egd=file:/dev/./urandom", "-Dspring.datasource.url=jdbc:postgresql://postgres/portal", -Xmx256m, -jar, /opt/calendar/calendar.jar]
+
+  declaration:
+    <<: *backend-base
+    entrypoint: [java, "-Djava.security.egd=file:/dev/./urandom", "-Dspring.datasource.url=jdbc:postgresql://postgres/portal", -Xmx256m, -jar, /opt/declaration/declaration.jar]
+
+  edi:
+    <<: *backend-base
+    entrypoint: [java, "-Djava.security.egd=file:/dev/./urandom", "-Dspring.datasource.url=jdbc:postgresql://postgres/portal", -Xmx256m, -jar, /opt/edi/edi.jar]
+
+  feedback:
+    <<: *backend-base
+    entrypoint: [java, "-Djava.security.egd=file:/dev/./urandom", "-Dspring.datasource.url=jdbc:postgresql://postgres/portal", -Xmx256m, -jar, /opt/feedback/feedback.jar]
+
+  notification:
+    <<: *backend-base
+    entrypoint: [java, "-Djava.security.egd=file:/dev/./urandom", "-Dspring.datasource.url=jdbc:postgresql://postgres/portal", -Xmx256m, -jar, /opt/notification/notification.jar]
+
+  profile:
+    <<: *backend-base
+    entrypoint: [java, "-Djava.security.egd=file:/dev/./urandom", -Xmx256m, -jar, /opt/profile/profile.jar]
+
+  push:
+    <<: *backend-base
+    entrypoint: [java, "-Djava.security.egd=file:/dev/./urandom", -Xmx256m, -jar, /opt/push/push.jar]
+
+  frontend:
+    build:
+      context: .
+      dockerfile: ./docker/frontend/Dockerfile
+    image: frontend
+    ports:
+      - "80:80"
+    entrypoint: [nginx, -g, "daemon off;"]
+    depends_on:
+      - postgres
+      - migration
+      - admin
+      - authentication
+      - budget
+      - calendar
+      - declaration
+      - edi
+      - feedback
+      - notification
+      - profile
+      - push
+    restart: on-failure
+
+  migration:
+    build:
+      context: ./db-migrations
+      dockerfile: Dockerfile
+      args:
+        LIQUIBASE_IMAGE: "maven.e-taxes.gov.az:48082/tools/liquibase:liquibase-3.8.0-postgresql-42.2.6"
+    working_dir: /opt/update
+    image: liquibase
+    environment:
+      - POSTGRES_USER=db_user
+      - POSTGRES_PASSWORD=db_password
+      - POSTGRES_DB=portal
+      - POSTGRES_HOST=postgres
+    restart: on-failure
+    entrypoint: [/opt/scripts/liquibase.sh, update]
+    depends_on:
+      - postgres
+

@@ -1,0 +1,16 @@
+{
+    "CLIENT_PATH": "/eportal",
+    "endpointMap": {
+      "SERVER_PATH_AUTH": "/api/po/auth/public/v1",
+      "SERVER_PATH_PROFILE": "/api/po/profile/public/v1",
+      "SERVER_PATH_BUDGET": "/api/po/budget/public/v1",
+      "SERVER_PATH_CALENDAR": "/api/po/calendar/public/v1",
+      "SERVER_PATH_DECLARATION": "/api/po/declaration/public/v1",
+      "SERVER_PATH_PORTAL": "/api/portal/push/v1",
+      "SERVER_PATH_NOTIFICATION": "/api/po/notification/public/v1",
+      "SERVER_PATH_APPLICATIONS": "/api/po/edi/public/v1",
+      "SERVER_PATH_BUDGET_PRIVATE": "/api/po/budget/v1",
+      "SERVER_PATH_FEEDBACK": "/api/po/feedback/public/v1",
+      "SERVER_PATH_ADMIN": "/api/po/admin/internal/v1"
+    }
+  }

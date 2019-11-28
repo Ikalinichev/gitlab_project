@@ -1,0 +1,17 @@
+spring:
+  profiles:
+    active: "cm"
+
+---
+
+server:
+  port: 8080
+  servlet:
+    context-path: /api/po/feedback
+
+spring:
+  profiles: cm
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST}/${POSTGRES_DB}
+    username: ${POSTGRES_USER}
+    password: ${POSTGRES_PASSWORD}

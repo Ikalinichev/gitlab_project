@@ -1,0 +1,13 @@
+spring:
+  profiles:
+    active: "cm"
+
+---
+
+server:
+  port: 8080
+  servlet:
+    context-path: /api/po/budget
+
+spring:
+  profiles: cm
